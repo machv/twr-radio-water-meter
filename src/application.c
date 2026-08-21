@@ -1,5 +1,7 @@
 #include <application.h>
 
+#define LITERS_PER_CUBIC_METER 1000.0f
+
 // How long should radio listen for messages after boot or a button press
 #define INITIAL_LISTEN_INTERVAL (1 * 60 * 1000)
 
@@ -20,30 +22,71 @@ twr_button_t button;
 
 // Event Counter
 uint32_t last_counter = 0;
+
+static float counter_to_cubic_meters(uint32_t counter)
+{
+    return ((float) counter * WATER_METER_LITERS_PER_IMPULSE) / LITERS_PER_CUBIC_METER;
+}
+
+static bool cubic_meters_to_counter(float cubic_meters, uint32_t *counter)
+{
+    if (!isfinite(cubic_meters) || cubic_meters < 0.0f || WATER_METER_LITERS_PER_IMPULSE <= 0.0f)
+    {
+        return false;
+    }
+
+    double pulse_count = ((double) cubic_meters * LITERS_PER_CUBIC_METER) /
+                         (double) WATER_METER_LITERS_PER_IMPULSE;
+
+    if (pulse_count > UINT32_MAX)
+    {
+        return false;
+    }
+
+    *counter = (uint32_t) (pulse_count + 0.5);
+
+    return true;
+}
+
+static void set_water_usage(float cubic_meters)
+{
+    uint32_t new_counter;
+
+    if (!cubic_meters_to_counter(cubic_meters, &new_counter))
+    {
+        twr_log_error("Cannot set water usage to %.3f m3.", cubic_meters);
+        return;
+    }
+
+    twr_pulse_counter_set(TWR_MODULE_SENSOR_CHANNEL_A, new_counter);
+    last_counter = new_counter;
+
+    float total_usage = counter_to_cubic_meters(new_counter);
+    twr_radio_pub_float("usage/-/total", &total_usage);
+
+    twr_log_info("Water usage set to %lu impulses (%.3f m3).",
+                 (unsigned long) new_counter, total_usage);
+}
+
 void pulse_counter_event_handler(twr_module_sensor_channel_t channel, twr_pulse_counter_event_t event, void *event_param)
 {
-    (void) channel;
     (void) event_param;
 
-    if(event == TWR_PULSE_COUNTER_EVENT_UPDATE && channel == TWR_MODULE_SENSOR_CHANNEL_A) 
+    if (event == TWR_PULSE_COUNTER_EVENT_UPDATE && channel == TWR_MODULE_SENSOR_CHANNEL_A)
     {
-        twr_log_info("Publishing meter counter update.");
-
         uint32_t current_counter = twr_pulse_counter_get(TWR_MODULE_SENSOR_CHANNEL_A);
         uint32_t relative_counter = current_counter - last_counter;
 
-        // Send absolute usage
-        float_t absolute_usage = current_counter / (float_t)100;
+        float absolute_usage = counter_to_cubic_meters(current_counter);
         twr_radio_pub_float("usage/-/total", &absolute_usage);
 
-        // Send relative usage only if changed
-        //if(relative_counter > 0)
-        //{
-        float_t relative_usage = relative_counter / (float_t)100;
+        float relative_usage = counter_to_cubic_meters(relative_counter);
         twr_radio_pub_float("usage/-/relative", &relative_usage);
-        //}
 
         last_counter = current_counter;
+
+        twr_log_info("Published water usage: total %.3f m3, relative %.3f m3.",
+                     absolute_usage, relative_usage);
 
         twr_led_pulse(&led, 200);
     }
@@ -128,35 +171,23 @@ void button_event_handler(twr_button_t *self, twr_button_event_t event, void *ev
 
 void counter_set_handler_int(uint64_t *id, const char *topic, void *value, void *param)
 {
-    twr_log_info("Set counter triggered [int].");
+    (void) id;
+    (void) topic;
+    (void) param;
 
-    uint32_t new_counter = *(uint32_t *)value;
-    float_t usage = new_counter / (float_t)100;
-
-    twr_pulse_counter_set(TWR_MODULE_SENSOR_CHANNEL_A, new_counter);
-    last_counter = new_counter;
-
-    twr_radio_pub_float("usage/-/total", &usage);
-
-    twr_log_info("Usage counter set to %li (%0.2f).", new_counter, usage);
+    set_water_usage((float) *(int *) value);
 }
 
 void counter_set_handler_float(uint64_t *id, const char *topic, void *value, void *param)
 {
-    twr_log_info("Set counter triggered [float].");
+    (void) id;
+    (void) topic;
+    (void) param;
 
-    float_t usage = *(float_t*)value;
-    uint32_t new_counter = usage * 100;
-
-    twr_pulse_counter_set(TWR_MODULE_SENSOR_CHANNEL_A, new_counter);
-    last_counter = new_counter;
-
-    twr_radio_pub_float("usage/-/total", &usage);
-
-    twr_log_info("Usage counter set to %li (%0.2f).", new_counter, usage);
+    set_water_usage(*(float *) value);
 }
 
-// Subscribe to counter changes
+// Both configuration payloads represent cubic meters.
 twr_radio_sub_t subs[] = {
     {"usage/-/total/float", TWR_RADIO_SUB_PT_FLOAT, counter_set_handler_float, NULL},
     {"usage/-/total/set", TWR_RADIO_SUB_PT_INT, counter_set_handler_int, NULL},
@@ -189,15 +220,15 @@ void application_init(void)
     twr_radio_init(TWR_RADIO_MODE_NODE_SLEEPING);
     twr_radio_set_subs(subs, sizeof(subs)/sizeof(subs[0]));
 
-    // Meter
+    // The HRI-A4 pulse output is active low; the pulse counter enables an internal pull-up.
     twr_pulse_counter_init(TWR_MODULE_SENSOR_CHANNEL_A, TWR_PULSE_COUNTER_EDGE_FALL);
-	twr_pulse_counter_set_event_handler(TWR_MODULE_SENSOR_CHANNEL_A, pulse_counter_event_handler, NULL);
+    twr_pulse_counter_set_event_handler(TWR_MODULE_SENSOR_CHANNEL_A, pulse_counter_event_handler, NULL);
     twr_pulse_counter_set_update_interval(TWR_MODULE_SENSOR_CHANNEL_A, USAGE_REPORT_INTERVAL);
 
     // Register task to notify end of listening
     listening_stopped_task_id = twr_scheduler_register(listening_stopped_handler, NULL, TWR_TICK_INFINITY);
 
-    twr_radio_pairing_request("gas-meter", FW_VERSION);
+    twr_radio_pairing_request("water-meter", FW_VERSION);
 
     // Wait for optional counter configuration
     start_listening();
