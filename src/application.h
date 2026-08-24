@@ -7,7 +7,12 @@
 
 // Volume represented by one pulse from the water meter sensor.
 #ifndef WATER_METER_LITERS_PER_IMPULSE
-#define WATER_METER_LITERS_PER_IMPULSE 1.0f
+#define WATER_METER_LITERS_PER_IMPULSE 1U
+#endif
+
+// Publish every pulse immediately while the radio is listening.
+#ifndef PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING
+#define PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING 1
 #endif
 
 #include <bcl.h>

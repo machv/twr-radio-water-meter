@@ -8,9 +8,17 @@ channel A to measure and report water usage.
 Connect the HRI-A4's two reed-switch leads to the HARDWARIO Sensor Module:
 
 | HRI-A4 lead | Sensor Module terminal |
-| --- | --- |
+| ----------- | --- |
 | White (I1)  | `A` |
 | Brown (GND) | `GND` |
+
+
+### Sensor Module R1.1 - 5 pin connector
+
+| A              | GND             | VCC       | GND/C | B    |
+|----------------|-----------------|-----------|-------|------|
+| HRI White (I1) | HRI Brown (GND) | 1Wire VCC |   -   | 1-wire DATA |
+
 
 The reed switch is polarity independent, so the two leads can be interchanged.
 Do not connect the sensor to `VCC`; it is a passive dry contact and does not
@@ -27,19 +35,25 @@ one impulse represents one liter. Change the compile-time definition in
 `src/application.h` when the meter has a different impulse weight:
 
 ```c
-#define WATER_METER_LITERS_PER_IMPULSE 1.0f
+#define WATER_METER_LITERS_PER_IMPULSE 1U
 ```
 
-Reported totals and relative usage are always in cubic meters:
+Totals and relative usage are reported in both cubic meters and liters:
 
-- `usage/-/total` - total water usage in m3
-- `usage/-/relative` - water used since the preceding report in m3
+- `usage/-/total` - total water usage in m3 as a native float
+- `usage/-/relative` - water used since the preceding report in m3 as a native float
+- `usage/-/total-liters` - total water usage in liters as an integer
+- `usage/-/relative-liters` - water used since the preceding report in liters as an integer
 
-The firmware reports when an impulse is detected. It listens for total-usage
-configuration for one minute after boot or a button press. Configure the
-initial meter state in m3 using either a floating point value on
-`usage/-/total/float` or an integer value on `usage/-/total/set`. The configured
-m3 value is converted to the corresponding impulse count.
+The firmware blinks the LED when an impulse is detected. It checks for changed
+usage every minute and reports it when needed, plus sends a regular report every
+30 minutes even without a change. While listening after boot or a button press,
+each pulse is reported immediately by default for troubleshooting. Set
+`PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING` to `0` to disable this behavior.
+Configure the
+initial meter state in m3 using a numeric value on `usage/-/total/set` (the
+legacy `usage/-/total/float` topic is also supported). The configured m3 value
+is converted to the corresponding impulse count.
 
 ## Development
 
