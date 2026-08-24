@@ -30,38 +30,86 @@ Disconnect power before changing the wiring. If the cable or supplied
 installation sheet identifies different electrical connections, follow the
 manufacturer's instructions for that specific HRI variant.
 
-The pulse input uses the internal pull-up and counts falling edges. By default,
-one impulse represents one liter. Change the compile-time definition in
-`src/application.h` when the meter has a different impulse weight:
+The SDK updates the pulse counter immediately on each falling edge, and the
+firmware flashes the LED for every detected pulse.
+
+By default, one impulse represents one liter. Change the compile-time definition
+in `src/application.h` when the meter has a different whole-liter impulse
+weight:
 
 ```c
 #define WATER_METER_LITERS_PER_IMPULSE 1U
 ```
 
-Totals and relative usage are reported in both cubic meters and liters:
+## MQTT topics
 
-- `usage/-/total` - total water usage in m3 as a native float
-- `usage/-/relative` - water used since the preceding report in m3 as a native float
-- `usage/-/total-liters` - total water usage in liters as an integer
-- `usage/-/relative-liters` - water used since the preceding report in liters as an integer
+| Topic | Unit | Payload type | Description |
+| --- | --- | --- | --- |
+| `usage/-/total` | m3 | Native float | Total water usage |
+| `usage/-/relative` | m3 | Native float | Usage since the preceding report |
+| `usage/-/total-liters` | l | Unsigned integer | Total water usage |
+| `usage/-/relative-liters` | l | Unsigned integer | Usage since the preceding report |
 
-The firmware blinks the LED when an impulse is detected. It checks for changed
-usage every minute and reports it when needed, plus sends a regular report every
-30 minutes even without a change. While listening after boot or a button press,
-each pulse is reported immediately after the first valid total configuration is
-received, by default, for troubleshooting. Set
-`PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING` to `0` to disable this behavior.
-Configure the
-initial meter state in m3 using a numeric value on `usage/-/total/set` (the
-legacy `usage/-/total/float` topic is also supported). The configured m3 value
-is converted to the corresponding impulse count.
+The stock HARDWARIO gateway serializes generic native floats with two decimal
+places. Use the integer liter topics when exact whole-liter values are required.
+
+## Reporting schedule
+
+- Every minute (`USAGE_REPORT_INTERVAL`), usage is published only when the
+  counter changed since the preceding report.
+- Every 30 minutes (`SCHEDULED_REPORT_INTERVAL`), usage is published even when
+  the counter did not change.
+- If both schedules run at the same time, only one report is published.
+- Relative usage is calculated from the last periodic or troubleshooting
+  report.
+
+## Setting the current total
+
+The node listens for configuration for one minute after boot and after each
+button press. During this period the LED remains on and
+`core/-/listening-timeout` reports the timeout in seconds.
+
+Send the current meter value in m3 as a numeric payload to:
+
+```text
+usage/-/total/set
+```
+
+The legacy `usage/-/total/float` topic is also supported. The value is converted
+to the nearest pulse count, stored in the SDK pulse counter, and the new total
+is published immediately. This also resets the relative-report baseline.
+
+When `PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING` is enabled, per-pulse
+troubleshooting reports begin only after the first valid total is received in
+the current listening session. This prevents an unconfigured counter value from
+being published. Pressing the button starts a new listening session and disables
+immediate reports until another valid total is received.
+
+## Compile-time options
+
+Configure these defaults in `src/application.h`:
+
+| Definition | Default | Description |
+| --- | --- | --- |
+| `WATER_METER_LITERS_PER_IMPULSE` | `1U` | Whole liters represented by one pulse |
+| `PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING` | `1` | Publish every pulse after configuration while listening |
+| `ENABLE_CLIMATE_MODULE` | `1` | Enable the optional Climate Module |
 
 ## Development
 
-### Init
+### Initialize
 
 ```bash
 git submodule update --init sdk
+```
+
+### Build
+
+```bash
+cmake -B obj/debug . -G Ninja \
+  -DTYPE=debug \
+  -DCMAKE_TOOLCHAIN_FILE=sdk/toolchain/toolchain.cmake
+ninja -C obj/debug
 ```
 
 ### Upgrade SDK version
