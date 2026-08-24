@@ -8,8 +8,8 @@ channel A to measure and report water usage.
 Connect the HRI-A4's two reed-switch leads to the HARDWARIO Sensor Module:
 
 | HRI-A4 lead | Sensor Module terminal |
-| ----------- | --- |
-| White (I1)  | `A` |
+| ----------- | ----- |
+| White (I1)  | `A`   |
 | Brown (GND) | `GND` |
 
 
@@ -17,7 +17,7 @@ Connect the HRI-A4's two reed-switch leads to the HARDWARIO Sensor Module:
 
 | A              | GND             | VCC       | GND/C | B    |
 |----------------|-----------------|-----------|-------|------|
-| HRI White (I1) | HRI Brown (GND) | 1Wire VCC |   -   | 1-wire DATA |
+| HRI White (I1) | HRI Brown (GND) + 1-wire (GND) black | 1Wire (VCC) red |   -   | 1-wire (DATA) yellow/white |
 
 
 The reed switch is polarity independent, so the two leads can be interchanged.

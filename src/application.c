@@ -1,4 +1,5 @@
 #include <application.h>
+#include <twr_ds18b20.h>
 
 #define LITERS_PER_CUBIC_METER 1000.0f
 
@@ -11,9 +12,65 @@
 
 // Defaults
 #define BATTERY_UPDATE_INTERVAL (60 * 60 * 1000)
+#if !ENABLE_CLIMATE_MODULE
 #define TEMPERATURE_MEASURE_INTERVAL_SECOND (30)
 #define TEMPERATURE_PUBLISH_DELTA (1.0f)
 #define TEMPERATURE_PUBLISH_TIMEOUT_SECOND (15 * 60)
+#endif
+
+#define SERVICE_INTERVAL_INTERVAL (10 * 60 * 1000)
+
+#define UPDATE_SERVICE_INTERVAL            (5 * 1000)
+#define UPDATE_NORMAL_INTERVAL             (1 * 60 * 1000)
+
+#define BAROMETER_UPDATE_SERVICE_INTERVAL  (1 * 60 * 1000)
+#define BAROMETER_UPDATE_NORMAL_INTERVAL   (5 * 60 * 1000)
+
+#define TEMPERATURE_DS18B20_PUB_NO_CHANGE_INTERVAL (5 * 60 * 1000)
+#define TEMPERATURE_DS18B20_PUB_VALUE_CHANGE 1.0f //0.4f
+
+#define TEMPERATURE_TAG_PUB_NO_CHANGE_INTERVAL (5 * 60 * 1000)
+#define TEMPERATURE_TAG_PUB_VALUE_CHANGE 50.0f //0.6f
+
+#define HUMIDITY_TAG_PUB_NO_CHANGE_INTERVAL (5 * 60 * 1000)
+#define HUMIDITY_TAG_PUB_VALUE_CHANGE 50.0f //50.f
+
+#define LUX_METER_TAG_PUB_NO_CHANGE_INTERVAL (5 * 60 * 1000)
+#define LUX_METER_TAG_PUB_VALUE_CHANGE 100000.0f // set too big value so data will be send only every 5 minutes, light changes a lot outside.
+
+#define BAROMETER_TAG_PUB_NO_CHANGE_INTERVAL (5 * 60 * 1000)
+#define BAROMETER_TAG_PUB_VALUE_CHANGE 200000.0f //20.0f
+
+#define DS18B20_SENSOR_COUNT 14
+
+// 1-wire
+static twr_ds18b20_t ds18b20;
+static twr_ds18b20_sensor_t ds18b20_sensors[DS18B20_SENSOR_COUNT];
+
+typedef struct
+{
+    float value;
+    twr_tick_t next_pub;
+} event_param_t;
+
+struct {
+    event_param_t temperature_ds18b20[DS18B20_SENSOR_COUNT];
+#if ENABLE_CLIMATE_MODULE
+    event_param_t temperature;
+    event_param_t humidity;
+    event_param_t illuminance;
+    event_param_t pressure;
+#endif
+
+} params;
+
+void handler_ds18b20(twr_ds18b20_t *s, uint64_t device_id, twr_ds18b20_event_t e, void *p);
+
+#if ENABLE_CLIMATE_MODULE
+void climate_module_event_handler(twr_module_climate_event_t event, void *event_param);
+#endif
+
+void switch_to_normal_mode_task(void *param);
 
 // LED instance
 twr_led_t led;
@@ -179,7 +236,8 @@ void scheduled_report_task(void *param)
     twr_scheduler_plan_current_relative(SCHEDULED_REPORT_INTERVAL);
 }
 
-// Thermometer
+#if !ENABLE_CLIMATE_MODULE
+// Core Module thermometer
 twr_tmp112_t tmp112;
 float publish_temperature = NAN;
 twr_tick_t temperature_publish_timeout = 0;
@@ -206,6 +264,7 @@ void tmp112_event_handler(twr_tmp112_t *self, twr_tmp112_event_t event, void *ev
         }
     }
 }
+#endif
 
 // Battery
 void battery_event_handler(twr_module_battery_event_t event, void *event_param)
@@ -278,6 +337,121 @@ twr_radio_sub_t subs[] = {
     {"usage/-/total/set", TWR_RADIO_SUB_PT_FLOAT, counter_set_handler_float, NULL},
 };
 
+void handler_ds18b20(twr_ds18b20_t *self, uint64_t device_address, twr_ds18b20_event_t e, void *p)
+{
+    (void) p;
+
+    float value = NAN;
+
+    if (e == TWR_DS18B20_EVENT_UPDATE)
+    {
+        twr_ds18b20_get_temperature_celsius(self, device_address, &value);
+        int device_index = twr_ds18b20_get_index_by_device_address(self, device_address);
+
+        //twr_log_debug("UPDATE %" PRIx64 "(%d) = %f", device_address, device_index, value);
+
+        if ((fabs(value - params.temperature_ds18b20[device_index].value) >= TEMPERATURE_DS18B20_PUB_VALUE_CHANGE) || (params.temperature_ds18b20[device_index].next_pub < twr_scheduler_get_spin_tick()))
+        {
+            static char topic[64];
+            snprintf(topic, sizeof(topic), "thermometer/%016" PRIx64 "/temperature", device_address);
+            twr_radio_pub_float(topic, &value);
+            params.temperature_ds18b20[device_index].value = value;
+            params.temperature_ds18b20[device_index].next_pub = twr_scheduler_get_spin_tick() + TEMPERATURE_DS18B20_PUB_NO_CHANGE_INTERVAL;
+        }
+    }
+
+    if (e == TWR_DS18B20_EVENT_ERROR)
+    {
+        //twr_log_debug("twr_ds18b20_EVENT_ERROR");
+    }
+}
+
+#if ENABLE_CLIMATE_MODULE
+void climate_module_event_handler(twr_module_climate_event_t event, void *event_param)
+{
+    (void) event_param;
+
+    float value;
+
+    if (event == TWR_MODULE_CLIMATE_EVENT_UPDATE_THERMOMETER)
+    {
+        if (twr_module_climate_get_temperature_celsius(&value))
+        {
+            if ((fabs(value - params.temperature.value) >= TEMPERATURE_TAG_PUB_VALUE_CHANGE) || (params.temperature.next_pub < twr_scheduler_get_spin_tick()))
+            {
+                twr_radio_pub_temperature(TWR_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value);
+                params.temperature.value = value;
+                params.temperature.next_pub = twr_scheduler_get_spin_tick() + TEMPERATURE_TAG_PUB_NO_CHANGE_INTERVAL;
+            }
+        }
+    }
+    else if (event == TWR_MODULE_CLIMATE_EVENT_UPDATE_HYGROMETER)
+    {
+        if (twr_module_climate_get_humidity_percentage(&value))
+        {
+            if ((fabs(value - params.humidity.value) >= HUMIDITY_TAG_PUB_VALUE_CHANGE) || (params.humidity.next_pub < twr_scheduler_get_spin_tick()))
+            {
+                twr_radio_pub_humidity(TWR_RADIO_PUB_CHANNEL_R3_I2C0_ADDRESS_DEFAULT, &value);
+                params.humidity.value = value;
+                params.humidity.next_pub = twr_scheduler_get_spin_tick() + HUMIDITY_TAG_PUB_NO_CHANGE_INTERVAL;
+            }
+        }
+    }
+    else if (event == TWR_MODULE_CLIMATE_EVENT_UPDATE_LUX_METER)
+    {
+        if (twr_module_climate_get_illuminance_lux(&value))
+        {
+            if (value < 1)
+            {
+                value = 0;
+            }
+            if ((fabs(value - params.illuminance.value) >= LUX_METER_TAG_PUB_VALUE_CHANGE) || (params.illuminance.next_pub < twr_scheduler_get_spin_tick()))
+            {
+                twr_radio_pub_luminosity(TWR_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value);
+                params.illuminance.value = value;
+                params.illuminance.next_pub = twr_scheduler_get_spin_tick() + LUX_METER_TAG_PUB_NO_CHANGE_INTERVAL;
+            }
+        }
+    }
+    else if (event == TWR_MODULE_CLIMATE_EVENT_UPDATE_BAROMETER)
+    {
+        if (twr_module_climate_get_pressure_pascal(&value))
+        {
+            if ((fabs(value - params.pressure.value) >= BAROMETER_TAG_PUB_VALUE_CHANGE) || (params.pressure.next_pub < twr_scheduler_get_spin_tick()))
+            {
+                float meter;
+
+                if (!twr_module_climate_get_altitude_meter(&meter))
+                {
+                    return;
+                }
+
+                twr_radio_pub_barometer(TWR_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value, &meter);
+                params.pressure.value = value;
+                params.pressure.next_pub = twr_scheduler_get_spin_tick() + BAROMETER_TAG_PUB_NO_CHANGE_INTERVAL;
+            }
+        }
+    }
+}
+#endif
+
+// This task is fired once after the SERVICE_INTERVAL_INTERVAL milliseconds and changes the period
+// of measurement. After module power-up you get faster updates so you can test the module and see
+// instant changes. After SERVICE_INTERVAL_INTERVAL the update period is longer to save batteries.
+void switch_to_normal_mode_task(void *param)
+{
+#if ENABLE_CLIMATE_MODULE
+    twr_module_climate_set_update_interval_thermometer(UPDATE_NORMAL_INTERVAL);
+    twr_module_climate_set_update_interval_hygrometer(UPDATE_NORMAL_INTERVAL);
+    twr_module_climate_set_update_interval_lux_meter(UPDATE_NORMAL_INTERVAL);
+    twr_module_climate_set_update_interval_barometer(BAROMETER_UPDATE_SERVICE_INTERVAL);
+#endif
+
+    twr_ds18b20_set_update_interval(&ds18b20, UPDATE_NORMAL_INTERVAL);
+
+    twr_scheduler_unregister(twr_scheduler_get_current_task_id());
+}
+
 void application_init(void)
 {
     // Initialize logging
@@ -296,14 +470,36 @@ void application_init(void)
     twr_module_battery_set_event_handler(battery_event_handler, NULL);
     twr_module_battery_set_update_interval(BATTERY_UPDATE_INTERVAL);
 
-    // Initialize thermometer sensor on core module
+#if !ENABLE_CLIMATE_MODULE
+    // Initialize thermometer sensor on Core Module
     twr_tmp112_init(&tmp112, TWR_I2C_I2C0, 0x49);
     twr_tmp112_set_event_handler(&tmp112, tmp112_event_handler, NULL);
     twr_tmp112_set_update_interval(&tmp112, TEMPERATURE_PUBLISH_TIMEOUT_SECOND);
+#endif
 
     // Radio
     twr_radio_init(TWR_RADIO_MODE_NODE_SLEEPING);
     twr_radio_set_subs(subs, sizeof(subs)/sizeof(subs[0]));
+
+    // For single sensor you can call twr_ds18b20_init()
+    //twr_ds18b20_init(&ds18b20, TWR_DS18B20_RESOLUTION_BITS_12);
+    twr_ds18b20_init_multiple(&ds18b20, ds18b20_sensors, DS18B20_SENSOR_COUNT, TWR_DS18B20_RESOLUTION_BITS_12);
+
+    twr_ds18b20_set_event_handler(&ds18b20, handler_ds18b20, NULL);
+    twr_ds18b20_set_update_interval(&ds18b20, UPDATE_SERVICE_INTERVAL);
+
+#if ENABLE_CLIMATE_MODULE
+    // Initialize climate module
+    twr_module_climate_init();
+    twr_module_climate_set_event_handler(climate_module_event_handler, NULL);
+    twr_module_climate_set_update_interval_thermometer(UPDATE_SERVICE_INTERVAL);
+    twr_module_climate_set_update_interval_hygrometer(UPDATE_SERVICE_INTERVAL);
+    twr_module_climate_set_update_interval_lux_meter(UPDATE_SERVICE_INTERVAL);
+    twr_module_climate_set_update_interval_barometer(BAROMETER_UPDATE_NORMAL_INTERVAL);
+    twr_module_climate_measure_all_sensors();
+#endif
+
+    twr_scheduler_register(switch_to_normal_mode_task, NULL, SERVICE_INTERVAL_INTERVAL);
 
     // The HRI-A4 pulse output is active low; the pulse counter enables an internal pull-up.
     twr_pulse_counter_init(TWR_MODULE_SENSOR_CHANNEL_A, TWR_PULSE_COUNTER_EDGE_FALL);

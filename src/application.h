@@ -15,6 +15,11 @@
 #define PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING 1
 #endif
 
+// Enable support for the optional Climate Module.
+#ifndef ENABLE_CLIMATE_MODULE
+#define ENABLE_CLIMATE_MODULE 1
+#endif
+
 #include <bcl.h>
 #include <twr.h>
 
