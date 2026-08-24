@@ -48,7 +48,8 @@ Totals and relative usage are reported in both cubic meters and liters:
 The firmware blinks the LED when an impulse is detected. It checks for changed
 usage every minute and reports it when needed, plus sends a regular report every
 30 minutes even without a change. While listening after boot or a button press,
-each pulse is reported immediately by default for troubleshooting. Set
+each pulse is reported immediately after the first valid total configuration is
+received, by default, for troubleshooting. Set
 `PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING` to `0` to disable this behavior.
 Configure the
 initial meter state in m3 using a numeric value on `usage/-/total/set` (the

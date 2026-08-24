@@ -27,6 +27,7 @@ twr_tick_t last_usage_publish_tick = TWR_TICK_INFINITY;
 twr_scheduler_task_id_t usage_update_task_id;
 twr_scheduler_task_id_t scheduled_report_task_id;
 bool is_listening = false;
+bool usage_configured_while_listening = false;
 
 static float counter_to_cubic_meters(uint32_t counter)
 {
@@ -109,6 +110,7 @@ static void set_water_usage(float cubic_meters)
 
     twr_pulse_counter_set(TWR_MODULE_SENSOR_CHANNEL_A, new_counter);
     last_reported_counter = new_counter;
+    usage_configured_while_listening = true;
 
     float total_usage = counter_to_cubic_meters(new_counter);
     publish_usage_in_units("usage/-/total", "usage/-/total-liters", new_counter);
@@ -145,7 +147,7 @@ void pulse_counter_event_handler(twr_module_sensor_channel_t channel, twr_pulse_
         twr_led_pulse(&led, 200);
 
 #if PUBLISH_USAGE_IMMEDIATELY_WHILE_LISTENING
-        if (is_listening)
+        if (is_listening && usage_configured_while_listening)
         {
             report_usage();
         }
@@ -239,6 +241,7 @@ void listening_stopped_handler(void* param)
 void start_listening()
 {
     is_listening = true;
+    usage_configured_while_listening = false;
 
     twr_led_set_mode(&led, TWR_LED_MODE_ON);
 
